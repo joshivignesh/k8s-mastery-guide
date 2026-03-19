@@ -1,0 +1,133 @@
+# hpa.yaml — HorizontalPodAutoscaler
+#
+# HPA automatically scales the number of pods based on observed metrics.
+# Requires: metrics-server installed in the cluster
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#
+# Scaling algorithm:
+#   desiredReplicas = ceil(currentReplicas * (currentMetric / desiredMetric))
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: demo-app-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: demo-app
+
+  minReplicas: 2   # Never scale below 2 (for HA)
+  maxReplicas: 10  # Cap to control costs
+
+  metrics:
+    # Scale on CPU utilization
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70  # Target 70% CPU across all pods
+
+    # Scale on memory utilization
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+  # Scaling behavior — controls how fast scale-up and scale-down happen
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30  # Wait 30s before scaling up again
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60  # Add at most 2 pods per minute
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait 5 minutes before scaling down
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60  # Remove at most 25% of pods per minute
+
+---
+# pdb.yaml — PodDisruptionBudget
+#
+# Protects your app during voluntary disruptions:
+#   - Node drains (cluster upgrades, maintenance)
+#   - Evictions from the scheduler
+#
+# NOT triggered by involuntary disruptions (node crash, OOM kill)
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: demo-app-pdb
+  namespace: default
+spec:
+  # minAvailable: guarantee at least N pods stay up during disruption
+  minAvailable: 2
+
+  # Alternative: maxUnavailable: at most N pods can be down
+  # maxUnavailable: 1
+
+  selector:
+    matchLabels:
+      app: demo-app
+
+---
+# resourcequota.yaml — Namespace-level resource limits
+#
+# Prevents runaway workloads from consuming all cluster resources.
+# Enforce this on every non-system namespace in production.
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: default-quota
+  namespace: default
+spec:
+  hard:
+    # Compute
+    requests.cpu: "4"
+    requests.memory: "8Gi"
+    limits.cpu: "8"
+    limits.memory: "16Gi"
+
+    # Object counts
+    pods: "20"
+    services: "10"
+    persistentvolumeclaims: "5"
+    secrets: "20"
+    configmaps: "20"
+
+---
+# limitrange.yaml — Default resource requests/limits per container
+#
+# If a pod doesn't specify requests/limits, LimitRange fills in defaults.
+# This prevents pods with no resource requests from being scheduled
+# as BestEffort (lowest QoS class — first to be evicted).
+
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: default
+spec:
+  limits:
+    - type: Container
+      default:           # Applied if limit not specified
+        cpu: "500m"
+        memory: "256Mi"
+      defaultRequest:    # Applied if request not specified
+        cpu: "100m"
+        memory: "128Mi"
+      max:               # Hard ceiling per container
+        cpu: "2"
+        memory: "2Gi"
+      min:               # Minimum per container
+        cpu: "50m"
+        memory: "64Mi"

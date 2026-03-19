@@ -1,0 +1,106 @@
+# pod.yaml — A well-configured Pod with best practices
+#
+# Key decisions explained inline:
+#   - securityContext: drop all capabilities, run as non-root
+#   - resource requests/limits: always set these — defines QoS class
+#   - readiness/liveness probes: essential for zero-downtime deployments
+#   - labels: use structured label schema (app, component, version)
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-app
+  namespace: default
+  labels:
+    app: demo-app
+    component: backend
+    version: "1.0.0"
+  annotations:
+    description: "Example pod with production-grade configuration"
+spec:
+  # Ensure pod doesn't run as root
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+
+  containers:
+    - name: app
+      image: nginx:1.25-alpine  # Pin to minor version — avoid `latest`
+      ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+      # Resource management — critical for scheduler and QoS
+      # Guaranteed QoS: requests == limits
+      # Burstable QoS: requests < limits (used here)
+      resources:
+        requests:
+          cpu: "100m"      # 0.1 CPU core
+          memory: "128Mi"
+        limits:
+          cpu: "500m"      # Max burst to 0.5 core
+          memory: "256Mi"
+
+      # Liveness probe: restarts the container if it fails
+      # Use for deadlock detection — not startup
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 15
+        failureThreshold: 3
+
+      # Readiness probe: removes pod from Service endpoints if it fails
+      # Use for "not ready to accept traffic yet"
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+
+      # Container-level security hardening
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true  # Force immutable filesystem
+        capabilities:
+          drop:
+            - ALL  # Drop all Linux capabilities by default
+
+      # Writable temp directory (since root fs is read-only)
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: config
+          mountPath: /etc/app
+          readOnly: true
+
+      # Inject config from ConfigMap as environment variables
+      envFrom:
+        - configMapRef:
+            name: demo-app-config
+
+      # Inject individual secret values
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: demo-app-secrets
+              key: db-password
+
+  volumes:
+    - name: tmp
+      emptyDir: {}
+    - name: config
+      configMap:
+        name: demo-app-config
+
+  # Graceful shutdown — give app time to finish in-flight requests
+  terminationGracePeriodSeconds: 30
+
+  # Restart policy for standalone pods (Deployments override this)
+  restartPolicy: Always

@@ -1,0 +1,91 @@
+# rbac.yaml — Role-Based Access Control
+#
+# RBAC objects:
+#   Role           — namespace-scoped permissions
+#   ClusterRole    — cluster-scoped permissions (or reusable across namespaces)
+#   RoleBinding    — grants Role to subject within a namespace
+#   ClusterRoleBinding — grants ClusterRole to subject cluster-wide
+#
+# Subjects: User, Group, ServiceAccount
+#
+# Principle of least privilege: grant only what's needed
+
+# ServiceAccount — identity for the demo-app pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-app-sa
+  namespace: default
+  labels:
+    app: demo-app
+automountServiceAccountToken: false  # Opt-in: only mount if app needs K8s API access
+
+---
+# Role — namespace-scoped permissions for demo-app
+# Only grants what this service actually needs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: demo-app-role
+  namespace: default
+rules:
+  # Allow reading its own ConfigMap (for hot-reload pattern)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["demo-app-config"]  # Restrict to specific resource by name
+    verbs: ["get", "watch"]
+
+  # Allow reading secrets it owns
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["demo-app-secrets"]
+    verbs: ["get"]
+
+---
+# RoleBinding — bind the Role to the ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-app-rolebinding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: demo-app-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: demo-app-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ClusterRole — read-only access across the cluster
+# Useful for: monitoring agents, log shippers, CI/CD pipelines
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: readonly-cluster-viewer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding — grant readonly access to a CI service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-readonly-binding
+subjects:
+  - kind: ServiceAccount
+    name: ci-service-account
+    namespace: ci-system
+roleRef:
+  kind: ClusterRole
+  name: readonly-cluster-viewer
+  apiGroup: rbac.authorization.k8s.io

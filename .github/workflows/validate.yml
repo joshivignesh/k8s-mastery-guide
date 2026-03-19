@@ -1,0 +1,84 @@
+name: Validate Kubernetes Manifests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'manifests/**'
+      - '.github/workflows/validate.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'manifests/**'
+
+jobs:
+  kubeconform:
+    name: kubeconform — Schema Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          VERSION="v0.6.4"
+          curl -sLo /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin
+          chmod +x /usr/local/bin/kubeconform
+
+      - name: Validate manifests
+        run: |
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version 1.29.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -output pretty \
+            ./manifests/
+
+  kube-score:
+    name: kube-score — Best Practice Linting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kube-score
+        run: |
+          VERSION="v1.18.0"
+          curl -sLo /usr/local/bin/kube-score \
+            "https://github.com/zegl/kube-score/releases/download/${VERSION}/kube-score_${VERSION#v}_linux_amd64"
+          chmod +x /usr/local/bin/kube-score
+
+      - name: Run kube-score
+        run: |
+          find ./manifests -name "*.yaml" -print0 \
+            | xargs -0 kube-score score \
+              --ignore-test pod-networkpolicy \
+              --output-format ci
+
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: manifests/
+          config_data: |
+            extends: default
+            rules:
+              line-length:
+                max: 120
+              comments:
+                min-spaces-from-content: 1
+              truthy:
+                allowed-values: ['true', 'false']

@@ -1,0 +1,163 @@
+# deployment.yaml — Production-grade Deployment
+#
+# A Deployment manages a ReplicaSet, which manages Pods.
+# It handles: rolling updates, rollbacks, scaling.
+#
+# Production checklist:
+#   ✅ Resource requests & limits
+#   ✅ Liveness & readiness probes
+#   ✅ Rolling update strategy tuned
+#   ✅ PodDisruptionBudget (see pdb.yaml)
+#   ✅ Anti-affinity rules (spread pods across nodes)
+#   ✅ Topology spread constraints
+#   ✅ Security context
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: default
+  labels:
+    app: demo-app
+    component: backend
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 3  # Start with 3 for HA across AZs
+
+  selector:
+    matchLabels:
+      app: demo-app
+
+  # Rolling update strategy — controls how updates are rolled out
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Allow 1 extra pod during update (N+1)
+      maxUnavailable: 0  # Never reduce capacity during update (zero-downtime)
+
+  # Revision history — how many old ReplicaSets to keep for rollback
+  revisionHistoryLimit: 5
+
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        component: backend
+        version: "1.0.0"
+      annotations:
+        # Causes rolling restart when configmap changes (add checksum in CI)
+        checksum/config: "{{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}"
+
+    spec:
+      serviceAccountName: demo-app-sa  # Always use a dedicated SA
+
+      # Graceful shutdown: allow in-flight requests to complete
+      terminationGracePeriodSeconds: 60
+
+      # Security: don't run as root at pod level
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+
+      # Spread pods across nodes to avoid single-point-of-failure
+      affinity:
+        podAntiAffinity:
+          # Preferred: try to spread, but don't hard-fail if nodes are limited
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: demo-app
+
+      # Topology spread across availability zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: demo-app
+
+      containers:
+        - name: app
+          image: your-registry/demo-app:1.0.0  # Never use `latest` in production
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 8080
+              name: http
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          # Startup probe: gives slow-starting containers extra time
+          # Only checks once during startup, then hands off to liveness
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            failureThreshold: 30   # 30 * 10s = 5 minutes max startup
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 0  # startupProbe handles the delay
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+
+          envFrom:
+            - configMapRef:
+                name: demo-app-config
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-app-secrets
+                  key: db-password
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      # Ensure old pods are removed before new nodes are cordoned
+      # (relevant during node drain / cluster upgrades)
+      priorityClassName: default-priority

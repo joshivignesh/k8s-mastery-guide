@@ -1,0 +1,148 @@
+# service.yaml — ClusterIP Service (internal traffic)
+#
+# Service types:
+#   ClusterIP   — internal only (default)
+#   NodePort    — exposed on every node's IP:port (dev/testing)
+#   LoadBalancer — provisions cloud LB (production external traffic)
+#   ExternalName — DNS alias to external service
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app
+  namespace: default
+  labels:
+    app: demo-app
+spec:
+  type: ClusterIP
+  selector:
+    app: demo-app  # Must match pod labels exactly
+  ports:
+    - name: http
+      port: 80          # Port the Service exposes
+      targetPort: 8080  # Port on the Pod
+      protocol: TCP
+
+---
+# ingress.yaml — Ingress with TLS and path routing
+#
+# Requires an Ingress Controller (nginx, traefik, etc.)
+# Install nginx ingress: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/...
+#
+# For TLS: cert-manager automates Let's Encrypt certificates
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo-app
+  namespace: default
+  annotations:
+    # nginx ingress controller annotations
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # cert-manager: auto-provision TLS certs
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.example.com
+      secretName: demo-app-tls  # cert-manager populates this
+
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: demo-app
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: demo-app-frontend
+                port:
+                  name: http
+
+---
+# networkpolicy.yaml — Zero-trust network policy
+#
+# By default, all pod-to-pod traffic is allowed.
+# NetworkPolicies let you implement least-privilege networking.
+#
+# This example:
+#   - Denies all ingress to demo-app by default
+#   - Allows only traffic from demo-app-frontend pods
+#   - Allows only traffic to demo-app-db on port 5432
+
+# Step 1: Default deny all ingress for this app
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-app-default-deny
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: demo-app
+  policyTypes:
+    - Ingress
+
+---
+# Step 2: Allow specific ingress sources
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-app-allow-frontend
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: demo-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Allow from frontend pods in same namespace
+        - podSelector:
+            matchLabels:
+              app: demo-app-frontend
+        # Allow from ingress controller namespace
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Step 3: Restrict egress from demo-app to only reach its database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-app-egress-db-only
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: demo-app
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+    # Allow traffic to database pods only
+    - to:
+        - podSelector:
+            matchLabels:
+              app: demo-app-db
+      ports:
+        - protocol: TCP
+          port: 5432
