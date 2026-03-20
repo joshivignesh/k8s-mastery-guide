@@ -1,0 +1,199 @@
+# storage.yaml — Persistent Volumes, Claims, and StorageClasses
+#
+# Storage concepts:
+#   PersistentVolume (PV)       — actual storage resource (admin-provisioned or dynamic)
+#   PersistentVolumeClaim (PVC) — request for storage by a workload
+#   StorageClass                — defines provisioner + parameters for dynamic provisioning
+#
+# Access modes:
+#   ReadWriteOnce (RWO)  — one node can read+write (block storage: EBS, PD, Azure Disk)
+#   ReadOnlyMany  (ROX)  — many nodes can read (rare)
+#   ReadWriteMany (RWX)  — many nodes can read+write (NFS, EFS, CephFS, Azure Files)
+#   ReadWriteOncePod      — one POD only (K8s 1.29+, safest for databases)
+#
+# Reclaim policies:
+#   Retain  — PV stays after PVC deleted (manual cleanup, safest for production data)
+#   Delete  — PV and underlying storage deleted with PVC (convenient for ephemeral data)
+#   Recycle — deprecated
+
+# ─────────────────────────────────────────────
+# StorageClasses — dynamic provisioning
+# ─────────────────────────────────────────────
+
+# AWS EBS (gp3) — general purpose SSD
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"  # Don't make default
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  iops: "3000"
+  throughput: "125"
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer  # Wait until pod is scheduled (matches AZ)
+reclaimPolicy: Retain   # Keep data even if PVC is deleted
+allowVolumeExpansion: true  # Allow resizing without downtime
+
+---
+# GKE Persistent Disk (balanced SSD)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd-gke
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
+  replication-type: regional-pd  # Regional disk: survives AZ failure
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+
+---
+# Azure Disk (Premium SSD)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd-azure
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Premium_LRS
+  cachingMode: ReadOnly
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+
+---
+# NFS / ReadWriteMany — for shared storage between pods
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: shared-nfs
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: nfs-server.default.svc.cluster.local
+  share: /exports/data
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+mountOptions:
+  - hard
+  - nfsvers=4.1
+
+---
+# ─────────────────────────────────────────────
+# Static PersistentVolume (admin pre-provisioned)
+# Use when: migrating existing disks, specific hardware, non-cloud storage
+# ─────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: legacy-data-pv
+  labels:
+    type: local
+    app: legacy-app
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  reclaimPolicy: Retain
+  storageClassName: ""  # Empty = not managed by a StorageClass
+  # For AWS EBS (static):
+  csi:
+    driver: ebs.csi.aws.com
+    volumeHandle: vol-0a1b2c3d4e5f67890  # Existing EBS volume ID
+    fsType: ext4
+
+---
+# ─────────────────────────────────────────────
+# PersistentVolumeClaims
+# ─────────────────────────────────────────────
+
+# Dynamic PVC — StorageClass provisions the volume automatically
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+  namespace: default
+  labels:
+    app: demo-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd   # References StorageClass above
+  resources:
+    requests:
+      storage: 10Gi
+  # Optional: volume expansion request (increase to 20Gi later)
+  # Edit this field and apply — no downtime if StorageClass has allowVolumeExpansion: true
+
+---
+# Shared PVC — ReadWriteMany for multiple pods (e.g., upload directory)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-uploads
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: shared-nfs
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+# Static PVC — binds to the specific PV above by label selector
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: legacy-data-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""  # Must match PV's storageClassName
+  resources:
+    requests:
+      storage: 50Gi
+  selector:
+    matchLabels:
+      app: legacy-app   # Matches the PV's labels
+
+---
+# Backup storage PVC (used by the CronJob)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-storage
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# ─────────────────────────────────────────────
+# Example: Pod using a PVC
+# ─────────────────────────────────────────────
+# apiVersion: v1
+# kind: Pod
+# spec:
+#   containers:
+#     - name: app
+#       volumeMounts:
+#         - name: data
+#           mountPath: /var/data
+#   volumes:
+#     - name: data
+#       persistentVolumeClaim:
+#         claimName: app-data
+#
+# Tips:
+#   - subPath: logs  → mount only a subdirectory of the PVC
+#   - readOnly: true → mount as read-only

@@ -4,7 +4,7 @@
 
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.29+-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/YOUR_USERNAME/k8s-mastery-guide/actions/workflows/validate.yml/badge.svg)](https://github.com/YOUR_USERNAME/k8s-mastery-guide/actions)
+[![CI](https://github.com/joshivignesh/k8s-mastery-guide/actions/workflows/validate.yml/badge.svg)](https://github.com/joshivignesh/k8s-mastery-guide/actions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ---
@@ -22,18 +22,30 @@ Every manifest is annotated. Every pattern is explained. Real-world gotchas incl
 ```
 k8s-mastery-guide/
 ├── manifests/
-│   ├── basics/          # Pods, ConfigMaps, Secrets, Namespaces
-│   ├── deployments/     # Deployments, StatefulSets, DaemonSets, Jobs
-│   ├── networking/      # Services, Ingress, NetworkPolicies
-│   ├── storage/         # PVs, PVCs, StorageClasses
-│   ├── rbac/            # Roles, ClusterRoles, ServiceAccounts
-│   └── monitoring/      # Prometheus, HPA, resource limits
+│   ├── basics/
+│   │   ├── pod.yaml                            # Annotated pod with security hardening
+│   │   └── configmap-and-secret.yaml           # Config injection patterns
+│   ├── deployments/
+│   │   ├── deployment.yaml                     # Zero-downtime rolling deployment
+│   │   ├── statefulset.yaml                    # PostgreSQL StatefulSet + headless Service
+│   │   └── daemonset-cronjob.yaml              # Log shipper DaemonSet + backup CronJob
+│   ├── networking/
+│   │   └── service-ingress-networkpolicy.yaml  # Service, TLS Ingress, NetworkPolicies
+│   ├── storage/
+│   │   └── storage.yaml                        # StorageClasses (AWS/GKE/Azure), PV, PVC
+│   ├── rbac/
+│   │   └── rbac.yaml                           # ServiceAccount, Roles, ClusterRole, Bindings
+│   └── monitoring/
+│       └── hpa-pdb-quota.yaml                  # HPA (v2), PDB, ResourceQuota, LimitRange
 ├── docs/
-│   ├── concepts.md      # Core K8s concepts explained
+│   ├── concepts.md      # How K8s works (control plane, reconciliation, scheduling)
 │   ├── patterns.md      # Production patterns & anti-patterns
-│   └── cheatsheet.md    # Quick reference commands
+│   └── cheatsheet.md    # kubectl quick reference + aliases
+├── CONTRIBUTING.md
+├── LICENSE
 └── .github/
-    └── workflows/       # CI: YAML validation, kubeconform
+    └── workflows/
+        └── validate.yml  # CI: kubeconform + kube-score + yamllint
 ```
 
 ---

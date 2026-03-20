@@ -1,0 +1,195 @@
+# statefulset.yaml — StatefulSet for stateful workloads (databases, queues, etc.)
+#
+# StatefulSet vs Deployment:
+#   Deployment     → pods are interchangeable, random names (app-7d6f9b-xkq2p)
+#   StatefulSet    → pods have stable identity: app-0, app-1, app-2
+#                    ordered startup/shutdown, stable DNS, stable storage
+#
+# Use StatefulSet for: PostgreSQL, MySQL, Cassandra, Kafka, ZooKeeper, Redis Cluster
+# Use Deployment for:  Stateless services, APIs, web servers
+#
+# Key properties:
+#   - Pods are created in order: app-0 → app-1 → app-2
+#   - Pods are deleted in reverse: app-2 → app-1 → app-0
+#   - Each pod gets its own PVC (volumeClaimTemplates)
+#   - Each pod gets a stable DNS: <pod>.<service>.<namespace>.svc.cluster.local
+
+# Headless Service — required for stable DNS per pod
+# Setting clusterIP: None makes it headless (no virtual IP, DNS resolves to pod IPs)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: default
+  labels:
+    app: postgres
+spec:
+  clusterIP: None   # Headless — DNS returns individual pod IPs
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# Read replica Service — routes to non-primary pods only
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-read
+  namespace: default
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+    role: replica   # Only route to replica pods
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: default
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres   # Must match the headless Service name above
+  replicas: 3             # primary + 2 replicas
+
+  selector:
+    matchLabels:
+      app: postgres
+
+  # Pod update strategy
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0  # Update all pods. Set to N to only update pods >= N (canary pattern)
+
+  # Retention policy for PVCs when StatefulSet is deleted
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain   # Keep PVCs when StatefulSet deleted (protect data)
+    whenScaled: Delete    # Delete PVCs for removed pods when scaling down
+
+  template:
+    metadata:
+      labels:
+        app: postgres
+
+    spec:
+      serviceAccountName: postgres-sa
+
+      # Spread pods across nodes (critical for HA databases)
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: postgres
+
+      securityContext:
+        runAsUser: 999    # postgres user
+        fsGroup: 999
+
+      # Init container — set up replication config before main container starts
+      initContainers:
+        - name: init-replication
+          image: postgres:15-alpine
+          command:
+            - bash
+            - -c
+            - |
+              # Determine ordinal index from pod name (postgres-0, postgres-1, etc.)
+              ORDINAL=${HOSTNAME##*-}
+              if [[ "$ORDINAL" == "0" ]]; then
+                echo "primary" > /etc/postgres/role
+              else
+                echo "replica" > /etc/postgres/role
+              fi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/postgres
+
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+
+          env:
+            - name: POSTGRES_DB
+              value: appdb
+            - name: POSTGRES_USER
+              value: appuser
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata  # Subdir avoids lost+found issues
+
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "appuser", "-d", "appdb"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "appuser", "-d", "appdb"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          volumeMounts:
+            - name: data               # Persistent data volume (unique per pod)
+              mountPath: /var/lib/postgresql/data
+            - name: config
+              mountPath: /etc/postgres
+
+      volumes:
+        - name: config
+          emptyDir: {}
+
+  # volumeClaimTemplates — each pod gets its OWN PVC created automatically
+  # postgres-0 → data-postgres-0
+  # postgres-1 → data-postgres-1
+  # postgres-2 → data-postgres-2
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: postgres
+      spec:
+        accessModes: ["ReadWriteOnce"]   # RWO: one node at a time (correct for block storage)
+        storageClassName: fast-ssd       # Reference your StorageClass
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# DNS reference (for your app to connect to):
+#
+# Primary (pod 0):   postgres-0.postgres.default.svc.cluster.local:5432
+# Replica 1 (pod 1): postgres-1.postgres.default.svc.cluster.local:5432
+# Replica 2 (pod 2): postgres-2.postgres.default.svc.cluster.local:5432
+# Read Service:      postgres-read.default.svc.cluster.local:5432
+#
+# Pattern: <pod-name>.<headless-service>.<namespace>.svc.cluster.local
