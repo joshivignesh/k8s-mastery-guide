@@ -1,0 +1,41 @@
+# values/staging.yaml — Override values for staging environment
+#
+# Usage: helm upgrade --install demo-app ./helm/demo-app \
+#          -f helm/demo-app/values.yaml \
+#          -f helm/demo-app/values/staging.yaml \
+#          --namespace staging
+
+image:
+  tag: "latest"   # Staging: use latest build from CI
+
+replicaCount: 1   # Save costs in staging
+
+autoscaling:
+  enabled: false  # No autoscaling in staging
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+ingress:
+  hosts:
+    - host: staging.app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: staging-demo-app-tls
+      hosts:
+        - staging.app.example.com
+
+podDisruptionBudget:
+  enabled: false  # Not needed with 1 replica
+
+env:
+  APP_ENV: staging
+  LOG_LEVEL: debug   # More verbose in staging
+  PORT: "8080"

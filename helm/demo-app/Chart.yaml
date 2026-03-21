@@ -1,0 +1,26 @@
+apiVersion: v2
+name: demo-app
+description: >
+  A production-grade Helm chart for demo-app — includes Deployment,
+  Service, Ingress, HPA, PDB, RBAC, and optional ServiceMonitor.
+
+type: application
+version: 0.1.0       # Chart version — bump on every chart change
+appVersion: "1.0.0"  # App version — reflects the container image tag
+
+keywords:
+  - kubernetes
+  - demo
+  - web
+
+maintainers:
+  - name: joshivignesh
+    url: https://github.com/joshivignesh
+
+dependencies: []
+# To add dependencies (e.g., a PostgreSQL subchart):
+# dependencies:
+#   - name: postgresql
+#     version: "12.x.x"
+#     repository: https://charts.bitnami.com/bitnami
+#     condition: postgresql.enabled

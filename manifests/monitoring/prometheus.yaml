@@ -1,0 +1,210 @@
+# prometheus.yaml — Prometheus monitoring stack
+#
+# This file sets up:
+#   1. ServiceMonitor   — tells Prometheus which pods to scrape (requires Prometheus Operator)
+#   2. PrometheusRule   — alerting rules
+#   3. Grafana Dashboard ConfigMap — pre-built dashboard
+#
+# Install Prometheus Operator (recommended):
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace
+#
+# Key concepts:
+#   Prometheus scrapes metrics via HTTP from /metrics endpoints
+#   ServiceMonitor CRD tells the Operator which Services to scrape
+#   Alertmanager routes firing alerts to PagerDuty, Slack, email, etc.
+
+# ─────────────────────────────────────────────
+# ServiceMonitor — auto-discovers pods to scrape
+# ─────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: demo-app
+  namespace: monitoring        # Must be in the namespace Prometheus Operator watches
+  labels:
+    release: kube-prometheus-stack   # Must match Prometheus Operator's serviceMonitorSelector
+spec:
+  namespaceSelector:
+    matchNames:
+      - default                # Watch Services in the `default` namespace
+  selector:
+    matchLabels:
+      app: demo-app            # Match the Service's labels
+  endpoints:
+    - port: http               # Named port in the Service
+      path: /metrics           # Metrics endpoint on your app
+      interval: 30s            # Scrape every 30 seconds
+      scrapeTimeout: 10s
+
+---
+# ─────────────────────────────────────────────
+# PrometheusRule — alerting rules
+# ─────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: demo-app-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: demo-app.availability
+      interval: 30s
+      rules:
+        # Alert if any pod is down
+        - alert: DemoAppPodDown
+          expr: |
+            kube_deployment_status_replicas_available{deployment="demo-app"} 
+            < kube_deployment_spec_replicas{deployment="demo-app"}
+          for: 2m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "demo-app has fewer replicas than desired"
+            description: >
+              Deployment {{ $labels.deployment }} in {{ $labels.namespace }} has
+              {{ $value }} available replicas, less than desired.
+            runbook: "https://github.com/joshivignesh/k8s-mastery-guide/docs/runbooks.md"
+
+        # Alert if deployment is completely down
+        - alert: DemoAppDown
+          expr: |
+            kube_deployment_status_replicas_available{deployment="demo-app"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "demo-app is completely down"
+            description: "No available replicas for demo-app in {{ $labels.namespace }}"
+
+    - name: demo-app.performance
+      rules:
+        # Alert on high error rate (requires app to expose http_requests_total metric)
+        - alert: DemoAppHighErrorRate
+          expr: |
+            rate(http_requests_total{job="demo-app", status=~"5.."}[5m])
+            /
+            rate(http_requests_total{job="demo-app"}[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "demo-app error rate above 5%"
+            description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+        # Alert on high latency (p99 > 1s)
+        - alert: DemoAppHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              rate(http_request_duration_seconds_bucket{job="demo-app"}[5m])
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "demo-app p99 latency above 1 second"
+            description: "p99 latency is {{ $value | humanizeDuration }}"
+
+    - name: demo-app.resources
+      rules:
+        # Alert if memory usage is above 80% of limit
+        - alert: DemoAppHighMemory
+          expr: |
+            container_memory_working_set_bytes{container="app", pod=~"demo-app-.*"}
+            /
+            kube_pod_container_resource_limits{container="app", resource="memory", pod=~"demo-app-.*"}
+            > 0.8
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "demo-app memory usage above 80%"
+            description: "Pod {{ $labels.pod }} memory at {{ $value | humanizePercentage }} of limit"
+
+        # Alert on OOMKill
+        - alert: DemoAppOOMKilled
+          expr: |
+            kube_pod_container_status_last_terminated_reason{
+              container="app",
+              pod=~"demo-app-.*",
+              reason="OOMKilled"
+            } == 1
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "demo-app container was OOMKilled"
+            description: "Pod {{ $labels.pod }} was OOMKilled. Increase memory limit or fix memory leak."
+
+---
+# ─────────────────────────────────────────────
+# Grafana Dashboard — pre-built dashboard via ConfigMap
+# ─────────────────────────────────────────────
+# Grafana sidecar watches for ConfigMaps with label grafana_dashboard: "1"
+# and automatically loads them as dashboards.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-app-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"    # Grafana sidecar picks this up automatically
+data:
+  demo-app.json: |
+    {
+      "title": "demo-app Overview",
+      "uid": "demo-app-overview",
+      "tags": ["kubernetes", "demo-app"],
+      "panels": [
+        {
+          "title": "Request Rate",
+          "type": "graph",
+          "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+          "targets": [{
+            "expr": "sum(rate(http_requests_total{job=\"demo-app\"}[5m])) by (status)",
+            "legendFormat": "HTTP {{status}}"
+          }]
+        },
+        {
+          "title": "p99 Latency",
+          "type": "graph",
+          "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+          "targets": [{
+            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"demo-app\"}[5m])) by (le))",
+            "legendFormat": "p99"
+          }]
+        },
+        {
+          "title": "Available Replicas",
+          "type": "stat",
+          "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4},
+          "targets": [{
+            "expr": "kube_deployment_status_replicas_available{deployment=\"demo-app\"}"
+          }]
+        },
+        {
+          "title": "Memory Usage %",
+          "type": "gauge",
+          "gridPos": {"x": 6, "y": 8, "w": 6, "h": 4},
+          "targets": [{
+            "expr": "avg(container_memory_working_set_bytes{container=\"app\", pod=~\"demo-app-.*\"} / kube_pod_container_resource_limits{container=\"app\", resource=\"memory\", pod=~\"demo-app-.*\"}) * 100"
+          }],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+          "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
+            "thresholds": {"steps": [
+              {"value": 0, "color": "green"},
+              {"value": 70, "color": "yellow"},
+              {"value": 85, "color": "red"}
+            ]}
+          }}
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 36,
+      "version": 1
+    }

@@ -30,22 +30,39 @@ k8s-mastery-guide/
 │   │   ├── statefulset.yaml                    # PostgreSQL StatefulSet + headless Service
 │   │   └── daemonset-cronjob.yaml              # Log shipper DaemonSet + backup CronJob
 │   ├── networking/
-│   │   └── service-ingress-networkpolicy.yaml  # Service, TLS Ingress, NetworkPolicies
+│   │   └── service-ingress-networkpolicy.yaml  # Service, TLS Ingress, zero-trust NetworkPolicies
 │   ├── storage/
-│   │   └── storage.yaml                        # StorageClasses (AWS/GKE/Azure), PV, PVC
+│   │   └── storage.yaml                        # StorageClasses (AWS/GKE/Azure), PV, PVC patterns
 │   ├── rbac/
 │   │   └── rbac.yaml                           # ServiceAccount, Roles, ClusterRole, Bindings
 │   └── monitoring/
-│       └── hpa-pdb-quota.yaml                  # HPA (v2), PDB, ResourceQuota, LimitRange
+│       ├── hpa-pdb-quota.yaml                  # HPA (v2), PDB, ResourceQuota, LimitRange
+│       └── prometheus.yaml                     # ServiceMonitor, PrometheusRules, Grafana dashboard
+├── helm/
+│   └── demo-app/
+│       ├── Chart.yaml
+│       ├── values.yaml                         # Fully documented default values
+│       ├── values/
+│       │   ├── staging.yaml                    # Staging overrides
+│       │   └── production.yaml                 # Production overrides
+│       └── templates/
+│           ├── _helpers.tpl                    # Reusable template helpers
+│           ├── deployment.yaml
+│           └── service-sa-hpa-pdb-ingress.yaml
 ├── docs/
-│   ├── concepts.md      # How K8s works (control plane, reconciliation, scheduling)
-│   ├── patterns.md      # Production patterns & anti-patterns
-│   └── cheatsheet.md    # kubectl quick reference + aliases
+│   ├── concepts.md        # Control plane, reconciliation loop, scheduling deep-dive
+│   ├── patterns.md        # Production patterns & anti-patterns
+│   ├── cheatsheet.md      # kubectl quick reference + aliases
+│   └── troubleshooting.md # Systematic debugging guide (Pending, CrashLoop, OOMKill, RBAC...)
 ├── CONTRIBUTING.md
 ├── LICENSE
 └── .github/
-    └── workflows/
-        └── validate.yml  # CI: kubeconform + kube-score + yamllint
+    ├── workflows/
+    │   └── validate.yml   # CI: kubeconform + kube-score + yamllint
+    ├── ISSUE_TEMPLATE/
+    │   ├── bug_report.md
+    │   └── feature_request.md
+    └── PULL_REQUEST_TEMPLATE.md
 ```
 
 ---
@@ -127,9 +144,25 @@ kubectl apply -f manifests/networking/service.yaml
 
 ## 📖 Docs
 
-- [Core Concepts](docs/concepts.md) — What is a Pod, Node, Control Plane, etcd?
+- [Core Concepts](docs/concepts.md) — Control plane, reconciliation loop, scheduling, RBAC deep-dive
 - [Production Patterns](docs/patterns.md) — Patterns that save you at 2am
+- [Troubleshooting](docs/troubleshooting.md) — Systematic debugging: Pending, CrashLoop, OOMKill, networking, RBAC
 - [Kubectl Cheatsheet](docs/cheatsheet.md) — Commands you'll use every day
+
+## ⎈ Helm Chart
+
+A production-ready Helm chart for  lives in [](helm/demo-app/):
+
+```bash
+# Install with defaults
+helm install demo-app ./helm/demo-app --namespace default
+
+# Install with environment-specific overrides
+helm install demo-app ./helm/demo-app   -f helm/demo-app/values.yaml   -f helm/demo-app/values/production.yaml   --namespace production
+
+# Preview rendered templates
+helm template demo-app ./helm/demo-app -f helm/demo-app/values/staging.yaml
+```
 
 ---
 

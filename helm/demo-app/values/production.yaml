@@ -1,0 +1,43 @@
+# values/production.yaml — Override values for production environment
+#
+# Usage: helm upgrade --install demo-app ./helm/demo-app \
+#          -f helm/demo-app/values.yaml \
+#          -f helm/demo-app/values/production.yaml \
+#          --namespace production
+
+image:
+  tag: "1.0.0"   # Production: always pin to a specific release tag
+
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+ingress:
+  hosts:
+    - host: app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: demo-app-tls
+      hosts:
+        - app.example.com
+
+monitoring:
+  enabled: true   # Enable Prometheus ServiceMonitor in production
+
+env:
+  APP_ENV: production
+  LOG_LEVEL: warn   # Less verbose in production
+  PORT: "8080"
